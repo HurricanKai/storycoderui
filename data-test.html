@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+  </head>
+  <body>
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/npm/showdown@2.1.0/dist/showdown.min.js"
+    ></script>
+    <script>
+      window.githubBase =
+        "https://raw.githubusercontent.com/HurricanKai/storycoder.dev/main/";
+    </script>
+    <script type="module">
+      const downloadStory = async function (name) {
+        const folderUrl = window.githubBase + name + "/";
+        const response = await fetch(folderUrl + name + "_Story.md");
+        let text = await response.text();
+        let metadata = {};
+
+        if (text.startsWith("---")) {
+          let nextIndex = text.indexOf("---", 4);
+          if (nextIndex !== -1) {
+            const metadataText = text.substring(4, nextIndex);
+            metadataText.split("\n").forEach((line) => {
+              let [name, value] = line.split(":", 2);
+              if (name) {
+                // strings are falsy if undefined or null or empty
+                metadata[name] = value.trimStart();
+              }
+            });
+            text = text.substring(nextIndex + 3);
+          }
+        }
+        const story = { metadata: metadata, text: text };
+        return story;
+      };
+      window.downloadAllStories = async function () {
+        const names = (
+          await fetch(window.githubBase + "story-names.csv").then((r) =>
+            r.text()
+          )
+        )
+          .split("\n")
+          // as empty strings are falsy but not === false, !! converts a faslsy value to false and a truthy value to true
+          .filter((name) => !!name);
+        let parsed = [];
+        for (let name of names) {
+          parsed.push(await downloadStory(name));
+        }
+        console.log(parsed);
+        return parsed;
+      };
+      window.markdownToHtml = function (markdown) {
+        var converter = new showdown.Converter(),
+          html = converter.makeHtml(markdown);
+        return html;
+      };
+    </script>
+    <script type="module">
+      let stories = (await window.downloadAllStories()).map(
+        ({ metadata, text }) => {
+          let new_metadata = {};
+          for (let key of Object.keys(metadata)) {
+            new_metadata[key.replace(" ", "_")] = metadata[key];
+          }
+          return { metadata: new_metadata, text };
+        }
+      );
+
+      let stories_tmp;
+      const db = await new Promise((resolve, reject) => {
+        const request = window.indexedDB.open("storydb", 9);
+        request.onupgradeneeded = (ev) => {
+          const db = ev.target.result;
+
+          {
+            stories_tmp = stories;
+
+            let set = new Set();
+            for (let story of stories) {
+              let { metadata } = story;
+              let keys = Object.keys(metadata);
+              for (let key of keys) {
+                set.add(key);
+              }
+            }
+            console.log(set);
+
+            try {
+              db.deleteObjectStore("stories_object");
+            } catch {}
+
+            const store = db.createObjectStore("stories_object", {
+              autoIncrement: true,
+            });
+
+            for (let key of set) {
+              store.createIndex("name_" + key, key);
+            }
+          }
+        };
+        request.onerror = (event) => reject(event);
+        request.onsuccess = (event) => resolve(request.result);
+      });
+      if (stories_tmp) {
+        console.log(db);
+
+        const transaction = db.transaction(["stories_object"], "readwrite");
+
+        console.log("got transaction");
+        const objstore = transaction.objectStore("stories_object");
+
+        for (let story of stories_tmp) {
+          console.log("writing story");
+          const { metadata, text } = story;
+          await new Promise((resolve, reject) => {
+            const request = objstore.add({ ...metadata, text });
+            request.onerror = (event) => reject();
+            request.onsuccess = (event) => resolve();
+          });
+        }
+        transaction.commit();
+      }
+      window.db = db;
+      console.log("done!");
+
+      const transaction2 = window.db.transaction(["stories_object"]);
+      const store2 = transaction2.objectStore("stories_object");
+
+      const index = store2.index("name_Coding_Level");
+
+      const advanced = await new Promise((resolve, reject) => {
+        const request = index.getAll("beginner");
+        request.onerror = (event) => reject();
+        request.onsuccess = (event) => resolve(request.result);
+      });
+
+      console.log("Beginner:", advanced);
+
+      const all = await new Promise((resolve, reject) => {
+        const request = store2.getAll();
+        request.onerror = (event) => reject();
+        request.onsuccess = (event) => resolve(request.result);
+      });
+      console.log(all);
+
+      transaction2.commit();
+    </script>
+    <div
+      x-data="{ stories: [] }"
+      x-init="stories = await window.downloadAllStories()"
+    >
+      <template x-for="story in stories">
+        <li x-html="window.markdownToHtml(story.text)"></li>
+      </template>
+    </div>
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"
+    ></script>
+  </body>
+</html>
